@@ -1,0 +1,18 @@
+[package]
+name = "vroid-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vroid-rs"
+path = "src/main.rs"
+
+[dependencies]
+vroid-model = { path = "../vroid-model" }
+vroid-avatar = { path = "../vroid-avatar" }
+vroid-render = { path = "../vroid-render" }
+anyhow.workspace = true
+clap.workspace = true
+glam.workspace = true
+image.workspace = true

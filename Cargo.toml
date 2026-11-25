@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vroid-model",
+    "crates/vroid-avatar",
+    "crates/vroid-render",
+    "crates/vroid-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.34", features = ["bytemuck"] }
+gltf = { version = "1.4", features = ["utils", "names"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde_json = "1"
+wgpu = "30"
+pollster = "0.4"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4

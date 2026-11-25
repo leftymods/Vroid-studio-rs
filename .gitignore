@@ -1,0 +1,18 @@
+# build output
+/target/
+/out/
+
+# generated avatar assets (rebuild with tools/extract_avatar.py)
+*.glb
+*.gltf
+*.bin
+/assets/base_female.glb
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# misc
+*.log
+.DS_Store
