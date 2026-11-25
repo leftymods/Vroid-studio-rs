@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use glam::{Mat3, Mat4, Vec3};
 
+pub mod export;
 pub mod mtoon;
 
 pub use mtoon::MToon;
@@ -83,6 +84,8 @@ pub struct Primitive {
     pub skin: Option<SkinWeights>,
     /// Index into `Scene::skins` when this primitive is skinned.
     pub skin_index: Option<usize>,
+    /// Source glTF node this primitive came from (`None` for generated meshes).
+    pub node: Option<usize>,
     /// Morph targets as per-vertex position deltas.
     pub morph_positions: Vec<Vec<[f32; 3]>>,
     /// Morph target names (from mesh extras `targetNames`), parallel to
@@ -222,7 +225,11 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
             .read_inverse_bind_matrices()
             .map(|it| it.map(|m| Mat4::from_cols_array_2d(&m)).collect())
             .unwrap_or_else(|| vec![Mat4::IDENTITY; joints.len()]);
-        skins.push(Skin { name: s.name().unwrap_or("skin").to_string(), joints, inverse_bind });
+        skins.push(Skin {
+            name: s.name().unwrap_or("skin").to_string(),
+            joints,
+            inverse_bind,
+        });
     }
 
     let node_count = doc.nodes().len();
@@ -267,19 +274,36 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
         let mesh_idx = mesh.index();
         let target_names: Vec<String> = gltf_json
             .as_ref()
-            .and_then(|j| j.get("meshes")?.get(mesh_idx)?.get("extras")?.get("targetNames")?.as_array().cloned())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .and_then(|j| {
+                j.get("meshes")?
+                    .get(mesh_idx)?
+                    .get("extras")?
+                    .get("targetNames")?
+                    .as_array()
+                    .cloned()
+            })
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let skin_index = node.skin().map(|s| s.index());
         // glTF: a skinned mesh is defined in skin space; its node transform is ignored.
-        let world = if skin_index.is_some() { Mat4::IDENTITY } else { node_world[node.index()] };
+        let world = if skin_index.is_some() {
+            Mat4::IDENTITY
+        } else {
+            node_world[node.index()]
+        };
         let normal_mat = Mat3::from_mat4(world).inverse().transpose();
         for prim in mesh.primitives() {
             if prim.mode() != gltf::mesh::Mode::Triangles {
                 continue;
             }
             let reader = prim.reader(|b| buffers.get(b.index()).map(|d| d.0.as_slice()));
-            let Some(positions) = reader.read_positions() else { continue };
+            let Some(positions) = reader.read_positions() else {
+                continue;
+            };
             let positions: Vec<[f32; 3]> = positions.collect();
             let normals: Vec<[f32; 3]> = reader
                 .read_normals()
@@ -313,13 +337,25 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
             for i in 0..positions.len() {
                 let wp = world.transform_point3(Vec3::from(positions[i]));
                 let wn = normal_mat * Vec3::from(normals[i]);
-                let wn = if wn.length_squared() > 1e-12 { wn.normalize() } else { Vec3::Y };
+                let wn = if wn.length_squared() > 1e-12 {
+                    wn.normalize()
+                } else {
+                    Vec3::Y
+                };
                 bounds_min = bounds_min.min(wp);
                 bounds_max = bounds_max.max(wp);
-                vertices.push(Vertex { pos: wp.to_array(), normal: wn.to_array(), uv: uvs[i] });
+                vertices.push(Vertex {
+                    pos: wp.to_array(),
+                    normal: wn.to_array(),
+                    uv: uvs[i],
+                });
             }
 
-            let material = prim.material().index().unwrap_or(0).min(materials.len() - 1);
+            let material = prim
+                .material()
+                .index()
+                .unwrap_or(0)
+                .min(materials.len() - 1);
             let mut morph_names = target_names.clone();
             morph_names.resize(morph_positions.len(), String::new());
             primitives.push(Primitive {
@@ -329,6 +365,7 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
                 material,
                 skin,
                 skin_index,
+                node: Some(node.index()),
                 morph_positions,
                 morph_names,
             });
@@ -366,7 +403,9 @@ fn load_material(m: &gltf::Material, json: &Option<serde_json::Value>, index: us
     let mut mat = Material {
         name: m.name().unwrap_or("material").to_string(),
         base_color: pbr.base_color_factor(),
-        base_color_tex: pbr.base_color_texture().map(|t| t.texture().source().index()),
+        base_color_tex: pbr
+            .base_color_texture()
+            .map(|t| t.texture().source().index()),
         normal_tex: m.normal_texture().map(|t| t.texture().source().index()),
         emissive: m.emissive_factor(),
         metallic: pbr.metallic_factor(),
@@ -387,7 +426,9 @@ fn load_material(m: &gltf::Material, json: &Option<serde_json::Value>, index: us
 }
 
 fn load_meta(json: &Option<serde_json::Value>) -> VrmMeta {
-    let Some(v) = json else { return VrmMeta::default() };
+    let Some(v) = json else {
+        return VrmMeta::default();
+    };
     let ext = &v["extensions"];
     if let Some(vrm1) = ext.get("VRMC_vrm") {
         let meta = &vrm1["meta"];
@@ -396,7 +437,11 @@ fn load_meta(json: &Option<serde_json::Value>) -> VrmMeta {
             version: meta["version"].as_str().map(str::to_string),
             authors: meta["authors"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default(),
             vrm_version: Some("1.0".into()),
         };
@@ -406,7 +451,10 @@ fn load_meta(json: &Option<serde_json::Value>) -> VrmMeta {
         return VrmMeta {
             name: meta["title"].as_str().map(str::to_string),
             version: meta["version"].as_str().map(str::to_string),
-            authors: meta["author"].as_str().map(|s| vec![s.to_string()]).unwrap_or_default(),
+            authors: meta["author"]
+                .as_str()
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default(),
             vrm_version: Some("0.x".into()),
         };
     }

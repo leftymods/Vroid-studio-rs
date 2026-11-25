@@ -13,9 +13,11 @@ use std::path::Path;
 use vroid_model::Scene;
 
 pub mod body;
+pub mod face;
 pub mod hair;
 
 pub use body::BodyParams;
+pub use face::FaceParams;
 
 /// VRM 1.0 expression presets mapped onto VRoid's `Fcl_*` face morphs.
 pub const EXPRESSIONS: &[(&str, &[&str])] = &[
@@ -70,6 +72,9 @@ pub struct AvatarDoc {
     /// Body proportions (bone-driven, like VRoid Studio).
     #[serde(default)]
     pub body: BodyParams,
+    /// Face proportions (vertex-driven, like VRoid Studio).
+    #[serde(default)]
+    pub face: FaceParams,
 }
 
 impl AvatarDoc {
@@ -122,12 +127,15 @@ impl AvatarDoc {
         let weights = self.resolve_morphs();
         apply_morphs(scene, &weights);
         self.apply_materials(scene);
+        face::apply(scene, &self.face);
         body::apply(scene, &self.body);
     }
 
     pub fn apply_materials(&self, scene: &mut Scene) {
         for mat in &mut scene.materials {
-            let Some(o) = self.materials.get(&mat.name) else { continue };
+            let Some(o) = self.materials.get(&mat.name) else {
+                continue;
+            };
             if let Some(c) = o.base_color {
                 mat.base_color = c;
             }

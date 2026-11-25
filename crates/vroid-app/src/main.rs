@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use vroid_avatar::{AvatarDoc, MaterialOverride, parse_weights};
+use std::path::PathBuf;
+use vroid_avatar::{parse_weights, AvatarDoc, MaterialOverride};
 use vroid_model::Scene;
 use vroid_render::{RenderParams, Renderer};
 
@@ -27,6 +27,92 @@ enum Cmd {
     Expr(ExprArgs),
     /// Serve an interactive web editor on localhost
     Serve(ServeArgs),
+    /// Export the edited model as a VRM 1.0 file
+    Export(ExportArgs),
+}
+
+#[derive(Args)]
+struct ShapeArgs {
+    // Body sliders, each in [-1, 1].
+    #[arg(long, default_value_t = 0.0)]
+    height: f32,
+    #[arg(long, default_value_t = 0.0)]
+    head: f32,
+    #[arg(long, default_value_t = 0.0)]
+    neck: f32,
+    #[arg(long, default_value_t = 0.0)]
+    arms: f32,
+    #[arg(long, default_value_t = 0.0)]
+    legs: f32,
+    #[arg(long, default_value_t = 0.0)]
+    shoulders: f32,
+    #[arg(long, default_value_t = 0.0)]
+    hips: f32,
+    #[arg(long, default_value_t = 0.0)]
+    waist: f32,
+    #[arg(long, default_value_t = 0.0)]
+    bust: f32,
+    #[arg(long, default_value_t = 0.0)]
+    thickness: f32,
+    // Face sliders, each in [-1, 1].
+    #[arg(long, default_value_t = 0.0)]
+    eye_size: f32,
+    #[arg(long, default_value_t = 0.0)]
+    eye_width: f32,
+    #[arg(long, default_value_t = 0.0)]
+    eye_height: f32,
+    #[arg(long, default_value_t = 0.0)]
+    eye_spacing: f32,
+    #[arg(long, default_value_t = 0.0)]
+    eye_angle: f32,
+    #[arg(long, default_value_t = 0.0)]
+    eye_y: f32,
+    #[arg(long, default_value_t = 0.0)]
+    brow_size: f32,
+    #[arg(long, default_value_t = 0.0)]
+    brow_y: f32,
+    #[arg(long, default_value_t = 0.0)]
+    brow_angle: f32,
+    #[arg(long, default_value_t = 0.0)]
+    nose_size: f32,
+    #[arg(long, default_value_t = 0.0)]
+    nose_y: f32,
+    #[arg(long, default_value_t = 0.0)]
+    mouth_size: f32,
+    #[arg(long, default_value_t = 0.0)]
+    mouth_width: f32,
+    #[arg(long, default_value_t = 0.0)]
+    mouth_y: f32,
+}
+
+#[derive(Args)]
+struct ExportArgs {
+    model: PathBuf,
+    #[arg(short, long, default_value = "avatar.vrm")]
+    out: PathBuf,
+    /// Avatar document (JSON) with expressions/morphs/colors/body/face
+    #[arg(long)]
+    doc: Option<PathBuf>,
+    /// Expression presets, e.g. happy=1,blink=0.4
+    #[arg(long)]
+    expr: Option<String>,
+    /// Raw morph weights, e.g. ALL_Joy=0.8
+    #[arg(long)]
+    morph: Option<String>,
+    /// Skip procedural hair
+    #[arg(long)]
+    no_hair: bool,
+    #[arg(long, default_value = "VRoid Avatar")]
+    name: String,
+    #[arg(long, default_value = "1.0.0")]
+    version: String,
+    #[arg(long)]
+    author: Vec<String>,
+    /// Bake expression morphs into the mesh instead of keeping them as VRM expressions
+    #[arg(long)]
+    bake_expr: bool,
+    #[command(flatten)]
+    shape: ShapeArgs,
 }
 
 #[derive(Args)]
@@ -92,17 +178,8 @@ struct RenderArgs {
     /// Skip hair primitives
     #[arg(long)]
     no_hair: bool,
-    // Body sliders, each in [-1, 1].
-    #[arg(long, default_value_t = 0.0)] height: f32,
-    #[arg(long, default_value_t = 0.0)] head: f32,
-    #[arg(long, default_value_t = 0.0)] neck: f32,
-    #[arg(long, default_value_t = 0.0)] arms: f32,
-    #[arg(long, default_value_t = 0.0)] legs: f32,
-    #[arg(long, default_value_t = 0.0)] shoulders: f32,
-    #[arg(long, default_value_t = 0.0)] hips: f32,
-    #[arg(long, default_value_t = 0.0)] waist: f32,
-    #[arg(long, default_value_t = 0.0)] bust: f32,
-    #[arg(long, default_value_t = 0.0)] thickness: f32,
+    #[command(flatten)]
+    shape: ShapeArgs,
 }
 
 #[derive(Args)]
@@ -187,13 +264,20 @@ fn print_info(scene: &Scene, renderer: Option<&Renderer>) {
         scene.bounds_max.z - scene.bounds_min.z,
         scene.radius()
     );
-    println!("materials  : {}  textures: {}  skins: {}", scene.materials.len(), scene.textures.len(), scene.skins.len());
+    println!(
+        "materials  : {}  textures: {}  skins: {}",
+        scene.materials.len(),
+        scene.textures.len(),
+        scene.skins.len()
+    );
     for (i, m) in scene.materials.iter().enumerate() {
         println!(
             "  [{i}] {:<28} mtoon={:<5} tex={:<3} alpha={:?} double={}",
             m.name,
             m.mtoon.enabled,
-            m.base_color_tex.map(|t| t.to_string()).unwrap_or_else(|| "-".into()),
+            m.base_color_tex
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "-".into()),
             m.alpha_mode,
             m.double_sided
         );
@@ -219,35 +303,70 @@ fn build_doc(a: &RenderArgs) -> Result<AvatarDoc> {
         Some(p) => AvatarDoc::load(p)?,
         None => AvatarDoc::default(),
     };
-    if let Some(e) = &a.expr {
+    apply_inputs(&mut doc, a.expr.as_deref(), a.morph.as_deref(), &a.shape)?;
+    Ok(doc)
+}
+
+fn apply_inputs(
+    doc: &mut AvatarDoc,
+    expr: Option<&str>,
+    morph: Option<&str>,
+    s: &ShapeArgs,
+) -> Result<()> {
+    if let Some(e) = expr {
         for (k, v) in parse_weights(e)? {
             doc.expressions.insert(k, v);
         }
     }
-    if let Some(m) = &a.morph {
+    if let Some(m) = morph {
         for (k, v) in parse_weights(m)? {
             doc.morphs.insert(k, v);
         }
     }
-    doc.body = vroid_avatar::BodyParams {
-        height: a.height,
-        head_size: a.head,
-        neck: a.neck,
-        arms: a.arms,
-        legs: a.legs,
-        shoulders: a.shoulders,
-        hips: a.hips,
-        waist: a.waist,
-        bust: a.bust,
-        thickness: a.thickness,
+    let body = vroid_avatar::BodyParams {
+        height: s.height,
+        head_size: s.head,
+        neck: s.neck,
+        arms: s.arms,
+        legs: s.legs,
+        shoulders: s.shoulders,
+        hips: s.hips,
+        waist: s.waist,
+        bust: s.bust,
+        thickness: s.thickness,
     };
-    Ok(doc)
+    if !body.is_neutral() {
+        doc.body = body;
+    }
+    let face = vroid_avatar::FaceParams {
+        eye_size: s.eye_size,
+        eye_width: s.eye_width,
+        eye_height: s.eye_height,
+        eye_spacing: s.eye_spacing,
+        eye_angle: s.eye_angle,
+        eye_y: s.eye_y,
+        brow_size: s.brow_size,
+        brow_y: s.brow_y,
+        brow_angle: s.brow_angle,
+        nose_size: s.nose_size,
+        nose_y: s.nose_y,
+        mouth_size: s.mouth_size,
+        mouth_width: s.mouth_width,
+        mouth_y: s.mouth_y,
+    };
+    if !face.is_neutral() {
+        doc.face = face;
+    }
+    Ok(())
 }
 
 fn parse_target(t: &Option<String>) -> Result<Option<[f32; 3]>> {
     match t {
         Some(t) => {
-            let v: Vec<f32> = t.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
+            let v: Vec<f32> = t
+                .split(',')
+                .map(|x| x.trim().parse())
+                .collect::<Result<_, _>>()?;
             if v.len() != 3 {
                 anyhow::bail!("--target needs three numbers");
             }
@@ -300,7 +419,9 @@ fn main() -> Result<()> {
             }
             doc.apply(&mut scene);
             if a.no_hair {
-                scene.primitives.retain(|p| !p.name.to_lowercase().contains("hair"));
+                scene
+                    .primitives
+                    .retain(|p| !p.name.to_lowercase().contains("hair"));
             }
             print_info(&scene, None);
             let renderer = Renderer::new()?;
@@ -323,7 +444,11 @@ fn main() -> Result<()> {
             let t0 = std::time::Instant::now();
             let rgba = renderer.render(&scene, &p)?;
             save_png(&a.out, &rgba, w, h)?;
-            println!("rendered   : {} ({w}x{h}, {:.2}s)", a.out.display(), t0.elapsed().as_secs_f32());
+            println!(
+                "rendered   : {} ({w}x{h}, {:.2}s)",
+                a.out.display(),
+                t0.elapsed().as_secs_f32()
+            );
         }
         Cmd::Sheet(a) => {
             let scene = load_avatar(&a.model)?;
@@ -343,7 +468,8 @@ fn main() -> Result<()> {
                     ..Default::default()
                 };
                 let rgba = renderer.render(&scene, &p)?;
-                let img = image::RgbaImage::from_raw(size, size, rgba).context("frame size mismatch")?;
+                let img =
+                    image::RgbaImage::from_raw(size, size, rgba).context("frame size mismatch")?;
                 image::imageops::replace(&mut sheet, &img, (size * i) as i64, 0);
                 println!("view {}/{views} yaw={yaw:.0}", i + 1);
             }
@@ -353,10 +479,14 @@ fn main() -> Result<()> {
         Cmd::Serve(a) => {
             serve(a)?;
         }
+        Cmd::Export(a) => {
+            export(a)?;
+        }
         Cmd::Expr(a) => {
             let mut base = load_avatar(&a.model)?;
             if a.no_hair {
-                base.primitives.retain(|p| !p.name.to_lowercase().contains("hair"));
+                base.primitives
+                    .retain(|p| !p.name.to_lowercase().contains("hair"));
             }
             let renderer = Renderer::new()?;
             let size = a.size.max(64);
@@ -365,8 +495,15 @@ fn main() -> Result<()> {
                 None => Some([0.0, base.bounds_max.y * 0.9, 0.03]),
             };
             let names: Vec<String> = match &a.only {
-                Some(s) => s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
-                None => vroid_avatar::expression_names().filter(|n| *n != "lookAt").map(str::to_string).collect(),
+                Some(s) => s
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect(),
+                None => vroid_avatar::expression_names()
+                    .filter(|n| *n != "lookAt")
+                    .map(str::to_string)
+                    .collect(),
             };
             let cols = (names.len() as f32).sqrt().ceil() as u32;
             let cols = cols.max(1);
@@ -389,7 +526,8 @@ fn main() -> Result<()> {
                     ..Default::default()
                 };
                 let rgba = renderer.render(&scene, &p)?;
-                let img = image::RgbaImage::from_raw(size, size, rgba).context("frame size mismatch")?;
+                let img =
+                    image::RgbaImage::from_raw(size, size, rgba).context("frame size mismatch")?;
                 let (cx, cy) = ((i as u32 % cols) * size, (i as u32 / cols) * size);
                 image::imageops::replace(&mut sheet, &img, cx as i64, cy as i64);
                 println!("expr {}/{}: {name}", i + 1, names.len());
@@ -401,6 +539,55 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+// ------------------------------------------------------------------ VRM export
+
+fn export(a: ExportArgs) -> Result<()> {
+    let mut scene = load_avatar(&a.model)?;
+    let mut doc = match &a.doc {
+        Some(p) => AvatarDoc::load(p)?,
+        None => AvatarDoc::default(),
+    };
+    apply_inputs(&mut doc, a.expr.as_deref(), a.morph.as_deref(), &a.shape)?;
+    scene.meta.name = Some(if doc.name.is_empty() {
+        a.name.clone()
+    } else {
+        doc.name.clone()
+    });
+    scene.meta.version = Some(a.version.clone());
+    if !a.author.is_empty() {
+        scene.meta.authors = a.author.clone();
+    }
+    scene.meta.vrm_version = Some("1.0".into());
+
+    let expressions = if a.bake_expr {
+        doc.apply(&mut scene);
+        for p in &mut scene.primitives {
+            p.morph_positions.clear();
+            p.morph_names.clear();
+        }
+        BTreeMap::new()
+    } else {
+        let mut shape = doc.clone();
+        shape.expressions.clear();
+        shape.morphs.clear();
+        shape.apply(&mut scene);
+        vroid_model::export::expression_binds(&scene, vroid_avatar::EXPRESSIONS)
+    };
+    if a.no_hair {
+        scene
+            .primitives
+            .retain(|p| !p.name.to_lowercase().contains("hair"));
+    }
+    scene.recompute_bounds();
+    vroid_model::export::export_vrm(&scene, &expressions, &a.out)?;
+    println!(
+        "exported   : {} ({} primitives, {} bones, vrm 1.0)",
+        a.out.display(),
+        scene.primitives.len(),
+        scene.skins.first().map(|s| s.joints.len()).unwrap_or(0)
+    );
+    Ok(())
+}
 
 // ------------------------------------------------------------------ editor server
 
@@ -552,11 +739,32 @@ fn render_query(
         bust: qf(q, "bust", 0.0),
         thickness: qf(q, "thickness", 0.0),
     };
+    doc.face = vroid_avatar::FaceParams {
+        eye_size: qf(q, "eye_size", 0.0),
+        eye_width: qf(q, "eye_width", 0.0),
+        eye_height: qf(q, "eye_height", 0.0),
+        eye_spacing: qf(q, "eye_spacing", 0.0),
+        eye_angle: qf(q, "eye_angle", 0.0),
+        eye_y: qf(q, "eye_y", 0.0),
+        brow_size: qf(q, "brow_size", 0.0),
+        brow_y: qf(q, "brow_y", 0.0),
+        brow_angle: qf(q, "brow_angle", 0.0),
+        nose_size: qf(q, "nose_size", 0.0),
+        nose_y: qf(q, "nose_y", 0.0),
+        mouth_size: qf(q, "mouth_size", 0.0),
+        mouth_width: qf(q, "mouth_width", 0.0),
+        mouth_y: qf(q, "mouth_y", 0.0),
+    };
 
     let mut scene = base.clone();
     doc.apply(&mut scene);
-    if q.get("nohair").map(|v| v == "1" || v == "true").unwrap_or(false) {
-        scene.primitives.retain(|p| !p.name.to_lowercase().contains("hair"));
+    if q.get("nohair")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
+    {
+        scene
+            .primitives
+            .retain(|p| !p.name.to_lowercase().contains("hair"));
     }
 
     let (w, h) = q
@@ -592,7 +800,11 @@ fn serve(a: ServeArgs) -> Result<()> {
     let base = load_avatar(&a.model)?;
     let renderer = Renderer::new()?;
     eprintln!("gpu    : {}", renderer.adapter_name());
-    eprintln!("model  : {} ({} primitives)", a.model.display(), base.primitives.len());
+    eprintln!(
+        "model  : {} ({} primitives)",
+        a.model.display(),
+        base.primitives.len()
+    );
     let addr = format!("{}:{}", a.host, a.port);
     let listener = TcpListener::bind(&addr).with_context(|| format!("binding {addr}"))?;
     eprintln!("editor : http://{addr}/");
@@ -614,14 +826,24 @@ fn serve(a: ServeArgs) -> Result<()> {
         let method = parts.next().unwrap_or("");
         let target = parts.next().unwrap_or("/");
         if method != "GET" {
-            respond(&mut stream, 405, "text/plain; charset=utf-8", b"method not allowed");
+            respond(
+                &mut stream,
+                405,
+                "text/plain; charset=utf-8",
+                b"method not allowed",
+            );
             continue;
         }
         let (path, query) = match target.split_once('?') {
             Some((p, q)) => (p, q),
             None => (target, ""),
         };
-        eprintln!("{} {} {}", method, path, if query.is_empty() { "" } else { "(query)" });
+        eprintln!(
+            "{} {} {}",
+            method,
+            path,
+            if query.is_empty() { "" } else { "(query)" }
+        );
         match path {
             "/" | "/index.html" => respond(
                 &mut stream,
@@ -635,7 +857,12 @@ fn serve(a: ServeArgs) -> Result<()> {
                     Ok(png) => respond(&mut stream, 200, "image/png", &png),
                     Err(e) => {
                         eprintln!("render error: {e:#}");
-                        respond(&mut stream, 500, "text/plain; charset=utf-8", format!("{e:#}").as_bytes());
+                        respond(
+                            &mut stream,
+                            500,
+                            "text/plain; charset=utf-8",
+                            format!("{e:#}").as_bytes(),
+                        );
                     }
                 }
             }

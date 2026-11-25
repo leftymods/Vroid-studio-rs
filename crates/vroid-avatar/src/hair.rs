@@ -273,6 +273,7 @@ fn build_primitive() -> Primitive {
         material: 0,
         skin: None,
         skin_index: None,
+        node: None,
         morph_positions: Vec::new(),
         morph_names: Vec::new(),
     }

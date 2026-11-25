@@ -107,6 +107,11 @@
     </div>
 
     <div class="group">
+      <h3>Face</h3>
+      <div id="faceSliders"></div>
+    </div>
+
+    <div class="group">
       <h3>Background</h3>
       <div class="chips" id="bgs">
         <button class="chip on" data-bg="171a21">dark</button>
@@ -139,7 +144,24 @@ const state = {
   frame: "body", yaw: 16, pitch: 4, zoom: 1,
   hair: "#c89a6b", eye: "#9e6642", skin: "#ffd8c6", hairon: true,
   expr: "none", w: 0.72, bg: "171a21",
+  face: {eye_size:0, eye_width:0, eye_height:0, eye_spacing:0, eye_angle:0, eye_y:0,
+         brow_size:0, brow_y:0, brow_angle:0, nose_size:0, nose_y:0,
+         mouth_size:0, mouth_width:0, mouth_y:0},
 };
+const FACE_SLIDERS = [
+  ["eye_size","Eye size"],["eye_width","Eye width"],["eye_height","Eye height"],
+  ["eye_spacing","Eye spacing"],["eye_angle","Eye angle"],["eye_y","Eye height pos"],
+  ["brow_size","Brow size"],["brow_y","Brow height"],["brow_angle","Brow angle"],
+  ["nose_size","Nose size"],["nose_y","Nose height"],
+  ["mouth_size","Mouth size"],["mouth_width","Mouth width"],["mouth_y","Mouth height"],
+];
+for (const [key,label] of FACE_SLIDERS){
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = `<label>${label}</label><input id="f_${key}" type="range" min="-1" max="1" value="0" step="0.01"><output id="f_${key}_o">0.00</output>`;
+  $("faceSliders").appendChild(row);
+  $("f_"+key).oninput = e => { state.face[key] = +e.target.value; $("f_"+key+"_o").textContent = e.target.value; schedule(); };
+}
 let timer = null, reqId = 0;
 
 function hex2rgb(h){h=h.replace('#','');return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
@@ -155,6 +177,7 @@ function buildQuery(){
   p.set("bg", state.bg);
   if (!state.hairon) p.set("nohair", "1");
   if (state.expr !== "none") p.set("expr", state.expr + ":" + state.w.toFixed(2));
+  for (const [key] of FACE_SLIDERS) p.set(key, state.face[key].toFixed(2));
   if (state.frame === "head") { p.set("target", "0,1.41,0"); p.set("radius", "0.21"); }
   p.set("t", Date.now());
   return "/render?" + p.toString();
@@ -233,6 +256,7 @@ $("save").onclick = () => {
 $("reset").onclick = () => {
   Object.assign(state, {frame:"body", yaw:16, pitch:4, zoom:1, hair:"#c89a6b", eye:"#9e6642",
     skin:"#ffd8c6", hairon:true, expr:"none", w:0.72, bg:"171a21"});
+  for (const [key] of FACE_SLIDERS){ state.face[key] = 0; $("f_"+key).value = 0; $("f_"+key+"_o").textContent = "0.00"; }
   $("yaw").value = 16; $("yaw_o").textContent = "16°";
   $("pitch").value = 4; $("pitch_o").textContent = "4°";
   $("zoom").value = 1; $("zoom_o").textContent = "1.00";
