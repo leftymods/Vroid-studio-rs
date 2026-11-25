@@ -272,6 +272,7 @@ fn build_primitive() -> Primitive {
         indices: b.idx,
         material: 0,
         skin: None,
+        skin_index: None,
         morph_positions: Vec::new(),
         morph_names: Vec::new(),
     }
@@ -291,6 +292,21 @@ pub fn attach(scene: &mut Scene) -> bool {
 
     let mut prim = build_primitive();
     prim.material = scene.primitives[first].material;
+
+    // Rigidly bind the hair to the head bone so body parameters (head size,
+    // height, ...) move it together with the face.
+    if let Some(skin) = scene.skins.first() {
+        if let Some(slot) = skin.joints.iter().position(|&n| {
+            scene.nodes.get(n).map(|x| x.name == "J_Bip_C_Head").unwrap_or(false)
+        }) {
+            let n = prim.vertices.len();
+            prim.skin = Some(vroid_model::SkinWeights {
+                joints: vec![[slot as u16, 0, 0, 0]; n],
+                weights: vec![[1.0, 0.0, 0.0, 0.0]; n],
+            });
+            prim.skin_index = Some(0);
+        }
+    }
     if let Some(m) = scene.materials.get_mut(prim.material) {
         m.double_sided = true;
         m.alpha_mode = AlphaMode::Opaque;

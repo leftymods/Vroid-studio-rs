@@ -81,6 +81,8 @@ pub struct Primitive {
     pub material: usize,
     /// Bind-pose skinning data (JOINTS_0 / WEIGHTS_0), if present.
     pub skin: Option<SkinWeights>,
+    /// Index into `Scene::skins` when this primitive is skinned.
+    pub skin_index: Option<usize>,
     /// Morph targets as per-vertex position deltas.
     pub morph_positions: Vec<Vec<[f32; 3]>>,
     /// Morph target names (from mesh extras `targetNames`), parallel to
@@ -110,6 +112,15 @@ pub struct VrmMeta {
 }
 
 #[derive(Clone, Debug)]
+pub struct Node {
+    pub name: String,
+    pub parent: Option<usize>,
+    pub local: Mat4,
+    pub mesh: Option<usize>,
+    pub skin: Option<usize>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Scene {
     pub name: String,
     pub generator: String,
@@ -122,6 +133,8 @@ pub struct Scene {
     pub bounds_max: Vec3,
     /// World transform per node index (for animation/posing later).
     pub node_world: Vec<Mat4>,
+    /// Node hierarchy (name, parent, local bind transform).
+    pub nodes: Vec<Node>,
 }
 
 impl Scene {
@@ -139,6 +152,40 @@ impl Scene {
     }
     pub fn triangle_count(&self) -> usize {
         self.primitives.iter().map(|p| p.indices.len() / 3).sum()
+    }
+    /// Recompute world matrices from the node hierarchy.
+    pub fn world_matrices(&self) -> Vec<Mat4> {
+        let mut world = vec![Mat4::IDENTITY; self.nodes.len()];
+        for i in 0..self.nodes.len() {
+            let mut chain = vec![i];
+            let mut cur = self.nodes[i].parent;
+            while let Some(p) = cur {
+                chain.push(p);
+                cur = self.nodes[p].parent;
+            }
+            let mut m = Mat4::IDENTITY;
+            for &idx in chain.iter().rev() {
+                m *= self.nodes[idx].local;
+            }
+            world[i] = m;
+        }
+        world
+    }
+    /// Recompute the axis-aligned bounds from the current vertex positions.
+    pub fn recompute_bounds(&mut self) {
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for p in &self.primitives {
+            for v in &p.vertices {
+                let p3 = Vec3::from(v.pos);
+                lo = lo.min(p3);
+                hi = hi.max(p3);
+            }
+        }
+        if lo.is_finite() && hi.is_finite() {
+            self.bounds_min = lo;
+            self.bounds_max = hi;
+        }
     }
 }
 
@@ -185,6 +232,16 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
             parent_of[child.index()] = Some(node.index());
         }
     }
+    let mut nodes = Vec::with_capacity(node_count);
+    for node in doc.nodes() {
+        nodes.push(Node {
+            name: node.name().unwrap_or("node").to_string(),
+            parent: parent_of[node.index()],
+            local: Mat4::from_cols_array_2d(&node.transform().matrix()),
+            mesh: node.mesh().map(|m| m.index()),
+            skin: node.skin().map(|s| s.index()),
+        });
+    }
     let mut node_world = vec![Mat4::IDENTITY; node_count];
     for node in doc.nodes() {
         let mut chain = vec![node.index()];
@@ -213,7 +270,9 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
             .and_then(|j| j.get("meshes")?.get(mesh_idx)?.get("extras")?.get("targetNames")?.as_array().cloned())
             .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
-        let world = node_world[node.index()];
+        let skin_index = node.skin().map(|s| s.index());
+        // glTF: a skinned mesh is defined in skin space; its node transform is ignored.
+        let world = if skin_index.is_some() { Mat4::IDENTITY } else { node_world[node.index()] };
         let normal_mat = Mat3::from_mat4(world).inverse().transpose();
         for prim in mesh.primitives() {
             if prim.mode() != gltf::mesh::Mode::Triangles {
@@ -269,6 +328,7 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
                 indices,
                 material,
                 skin,
+                skin_index,
                 morph_positions,
                 morph_names,
             });
@@ -297,6 +357,7 @@ pub fn load(path: impl AsRef<std::path::Path>) -> Result<Scene> {
         bounds_min,
         bounds_max,
         node_world,
+        nodes,
     })
 }
 

@@ -12,7 +12,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use vroid_model::Scene;
 
+pub mod body;
 pub mod hair;
+
+pub use body::BodyParams;
 
 /// VRM 1.0 expression presets mapped onto VRoid's `Fcl_*` face morphs.
 pub const EXPRESSIONS: &[(&str, &[&str])] = &[
@@ -64,6 +67,9 @@ pub struct AvatarDoc {
     /// Material name -> override.
     #[serde(default)]
     pub materials: BTreeMap<String, MaterialOverride>,
+    /// Body proportions (bone-driven, like VRoid Studio).
+    #[serde(default)]
+    pub body: BodyParams,
 }
 
 impl AvatarDoc {
@@ -116,6 +122,7 @@ impl AvatarDoc {
         let weights = self.resolve_morphs();
         apply_morphs(scene, &weights);
         self.apply_materials(scene);
+        body::apply(scene, &self.body);
     }
 
     pub fn apply_materials(&self, scene: &mut Scene) {

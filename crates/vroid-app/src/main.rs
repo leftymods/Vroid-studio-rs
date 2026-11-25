@@ -92,6 +92,17 @@ struct RenderArgs {
     /// Skip hair primitives
     #[arg(long)]
     no_hair: bool,
+    // Body sliders, each in [-1, 1].
+    #[arg(long, default_value_t = 0.0)] height: f32,
+    #[arg(long, default_value_t = 0.0)] head: f32,
+    #[arg(long, default_value_t = 0.0)] neck: f32,
+    #[arg(long, default_value_t = 0.0)] arms: f32,
+    #[arg(long, default_value_t = 0.0)] legs: f32,
+    #[arg(long, default_value_t = 0.0)] shoulders: f32,
+    #[arg(long, default_value_t = 0.0)] hips: f32,
+    #[arg(long, default_value_t = 0.0)] waist: f32,
+    #[arg(long, default_value_t = 0.0)] bust: f32,
+    #[arg(long, default_value_t = 0.0)] thickness: f32,
 }
 
 #[derive(Args)]
@@ -218,6 +229,18 @@ fn build_doc(a: &RenderArgs) -> Result<AvatarDoc> {
             doc.morphs.insert(k, v);
         }
     }
+    doc.body = vroid_avatar::BodyParams {
+        height: a.height,
+        head_size: a.head,
+        neck: a.neck,
+        arms: a.arms,
+        legs: a.legs,
+        shoulders: a.shoulders,
+        hips: a.hips,
+        waist: a.waist,
+        bust: a.bust,
+        thickness: a.thickness,
+    };
     Ok(doc)
 }
 
@@ -516,6 +539,19 @@ fn render_query(
         };
         doc.expressions.insert(name.to_string(), w.clamp(0.0, 1.0));
     }
+
+    doc.body = vroid_avatar::BodyParams {
+        height: qf(q, "height", 0.0),
+        head_size: qf(q, "head", 0.0),
+        neck: qf(q, "neck", 0.0),
+        arms: qf(q, "arms", 0.0),
+        legs: qf(q, "legs", 0.0),
+        shoulders: qf(q, "shoulders", 0.0),
+        hips: qf(q, "hips", 0.0),
+        waist: qf(q, "waist", 0.0),
+        bust: qf(q, "bust", 0.0),
+        thickness: qf(q, "thickness", 0.0),
+    };
 
     let mut scene = base.clone();
     doc.apply(&mut scene);
